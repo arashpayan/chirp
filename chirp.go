@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"regexp"
-	"strconv"
 	"time"
 
 	"golang.org/x/net/ipv4"
@@ -23,9 +22,6 @@ var ipv4Group = net.IPv4(224, 0, 0, 224)
 var ipv6Group = net.ParseIP("FF06::224")
 
 const chirpPort = 6464
-
-// chirps have a max size of 33 KB
-const maxChirpSize = 33 * 1024
 
 var serviceNameRegExp = regexp.MustCompile(`[a-zA-Z0-9\.\-]+`)
 
@@ -108,13 +104,14 @@ func newConnection() connection {
 }
 
 func newIP4Connection(iface net.Interface) (*connection, error) {
-	conn, err := net.ListenPacket("udp4", "0.0.0.0:"+strconv.Itoa(chirpPort))
+	conn, err := net.ListenPacket("udp4", fmt.Sprintf("0.0.0.0:%d", chirpPort))
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("newIP4 local: %v", conn.LocalAddr())
 
 	packetConn := ipv4.NewPacketConn(conn)
-	if err := packetConn.JoinGroup(&iface, &net.UDPAddr{IP: ipv4Group}); err != nil {
+	if err := packetConn.JoinGroup(nil, &net.UDPAddr{IP: ipv4Group}); err != nil {
 		return nil, errors.New("unable to join chirp multicast group - " + err.Error())
 	}
 	return &connection{
@@ -125,13 +122,14 @@ func newIP4Connection(iface net.Interface) (*connection, error) {
 }
 
 func newIP6Connection(iface net.Interface) (*connection, error) {
-	conn, err := net.ListenPacket("udp6", "[::]:"+strconv.Itoa(chirpPort))
+	conn, err := net.ListenPacket("udp6", fmt.Sprintf("[::]:%d", chirpPort))
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("newIP6 local: %v", conn.LocalAddr())
 
 	packetConn := ipv6.NewPacketConn(conn)
-	if err := packetConn.JoinGroup(&iface, &net.UDPAddr{IP: ipv6Group}); err != nil {
+	if err := packetConn.JoinGroup(nil, &net.UDPAddr{IP: ipv6Group}); err != nil {
 		return nil, errors.New("unable to join chirp multicast group - " + err.Error())
 	}
 	return &connection{
@@ -151,9 +149,11 @@ func (b broadcasterPayload) MarshalJSON() ([]byte, error) {
 }
 
 type message struct {
-	srcIP       string
-	ServiceName string                 `json:"service_name"`
-	Payload     map[string]interface{} `json:"payload"`
+	srcIP         string
+	BroadcasterID string                 `json:"broadcaster_id"`
+	ServiceName   string                 `json:"service_name"`
+	Payload       map[string]interface{} `json:"payload"`
+	TTL           int                    `json:"ttl"`
 }
 
 func (m *message) valid() bool {
@@ -170,6 +170,7 @@ func (m *message) valid() bool {
 
 // Broadcaster ...
 type Broadcaster struct {
+	id       string
 	handlers []interfaceHandler
 	service  string
 	payload  broadcasterPayload
@@ -210,25 +211,26 @@ func NewBroadcaster(service string, payload map[string]interface{}) (*Broadcaste
 		}
 	}
 
-	b := &Broadcaster{service: service, payload: serialized}
+	b := &Broadcaster{service: service, payload: serialized, id: randHexaDecimal(32)}
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		// Long Term: Why can this fail? Can we handle it better?
 		return nil, err
 	}
 	for _, iface := range ifaces {
-		if iface.Name == "lo" {
+		if iface.Flags&net.FlagLoopback == net.FlagLoopback {
 			continue
 		}
+		// if iface.Name == "lo" {
+		// 	continue
+		// }
 		v4, err := newIP4Connection(iface)
-		// v4, err := newIP4Conn(iface)
 		if err != nil {
 			// what should we do here?
 			b.Stop()
 			return nil, fmt.Errorf("unable to v4 multicast on %s - %v", iface.Name, err)
 		}
 		v6, err := newIP6Connection(iface)
-		// v6, err := newIP6Conn(iface)
 		if err != nil {
 			v4.close()
 			b.Stop()
@@ -249,8 +251,9 @@ func NewBroadcaster(service string, payload map[string]interface{}) (*Broadcaste
 
 func (b *Broadcaster) serve(conn *connection) {
 	m := map[string]interface{}{
-		"service_name": b.service,
-		"payload":      b.payload,
+		"broadcaster_id": b.id,
+		"service_name":   b.service,
+		"payload":        b.payload,
 	}
 	err := conn.write(m)
 	if err != nil {
@@ -274,10 +277,13 @@ func (b *Broadcaster) serve(conn *connection) {
 	for {
 		select {
 		case <-announce:
-			log.Printf("about to follow up")
 			conn.write(m)
 		case msg := <-received:
-			log.Printf("on: %v", msg)
+			// if msg.BroadcasterID == b.id {
+			// 	// ignore messages we have sent
+			// 	continue
+			// }
+			log.Printf("on: %+v", msg)
 		}
 	}
 }
@@ -302,4 +308,49 @@ type interfaceHandler struct {
 	iface  net.Interface
 	v4Conn *connection
 	v6Conn *connection
+}
+
+// Service ...
+type Service struct {
+	broadcasterID  string
+	Name           string
+	Payload        map[string]interface{}
+	expirationTime time.Time
+}
+
+// Listener ...
+type Listener struct {
+	handlers      []interfaceHandler
+	serviceName   string
+	foundServices map[string]Service
+	// discovered chan Service
+	// Discovered chan<- Service
+}
+
+// Start ...
+func (l *Listener) Start() error {
+	// ifaces, err := net.Interfaces()
+	// if err != nil {
+	// 	return errors.New("unable to retrieve network interfaces - " + err.Error())
+	// }
+
+	// for _, iface := range ifaces {
+	//
+	// }
+
+	return nil
+}
+
+// NewListener ...
+func NewListener(serviceName string) (*Listener, error) {
+	if err := ValidateServiceName(serviceName); err != nil {
+		return nil, err
+	}
+
+	listener := &Listener{
+		serviceName:   serviceName,
+		foundServices: make(map[string]Service),
+	}
+
+	return listener, nil
 }
