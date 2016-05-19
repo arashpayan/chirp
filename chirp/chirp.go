@@ -4,12 +4,28 @@ import (
 	"log"
 	"net"
 	"os"
-
-	"golang.org/x/net/ipv4"
+	"os/signal"
+	"syscall"
 
 	"github.com/arashpayan/chirp"
 	"github.com/codegangsta/cli"
 )
+
+var publisher *chirp.Publisher
+
+func init() {
+	systemSigChan := make(chan os.Signal, 1)
+	signal.Notify(systemSigChan, syscall.SIGTERM)
+	signal.Notify(systemSigChan, syscall.SIGINT)
+	go func() {
+		<-systemSigChan
+		// log.Printf("Signal %v. Exiting", sig)
+		if publisher != nil {
+			publisher.Stop()
+		}
+		os.Exit(0)
+	}()
+}
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -61,23 +77,13 @@ func xnet() {
 
 }
 
-func listenTo(packetConn *ipv4.PacketConn) {
-	buf := make([]byte, 33*1024)
-	for {
-		num, cm, src, err := packetConn.ReadFrom(buf)
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Printf("read: %v from %v. cm: %+v", string(buf[:num]), src, cm)
-	}
-}
-
 func broadcast(context *cli.Context) error {
 	if context.NArg() == 0 {
 		return cli.NewExitError("You need to specify a service name", 255)
 	}
 
-	_, err := chirp.NewPublisher(context.Args().First(), nil)
+	var err error
+	publisher, err = chirp.NewPublisher(context.Args().First()).SetTTL(10).Start()
 	if err != nil {
 		return cli.NewExitError(err.Error(), 255)
 	}

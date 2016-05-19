@@ -69,7 +69,7 @@ type message struct {
 	SenderID    string                 `json:"sender_id"`
 	ServiceName string                 `json:"service_name"`
 	Payload     map[string]interface{} `json:"payload"`
-	TTL         int                    `json:"ttl"`
+	TTL         uint                   `json:"ttl"`
 }
 
 func (m *message) valid() bool {
@@ -134,12 +134,10 @@ func (c *connection) read() (*message, error) {
 		var cm *ipv4.ControlMessage
 		num, cm, _, err = c.v4.ReadFrom(c.readBuf)
 		srcIP = cm.Src
-		// log.Printf("v4 cm: %v", cm)
 	} else if c.v6 != nil {
 		var cm *ipv6.ControlMessage
 		num, cm, _, err = c.v6.ReadFrom(c.readBuf)
 		srcIP = cm.Src
-		// log.Printf("v6 cm: %v", cm)
 	} else {
 		panic("no packet connection found")
 	}
@@ -170,17 +168,13 @@ func (c *connection) close() error {
 	}
 }
 
-func newConnection() connection {
-	return connection{readBuf: make([]byte, maxMessageBytes)}
-}
-
 func newIP4Connection() (*connection, error) {
 	// conn, err := net.ListenPacket("udp4", fmt.Sprintf("0.0.0.0:%d", chirpPort))
 	conn, err := reuse.ListenPacket("udp4", fmt.Sprintf("0.0.0.0:%d", chirpPort))
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("newIP4 local: %v", conn.LocalAddr())
+	// log.Printf("newIP4 local: %v", conn.LocalAddr())
 
 	packetConn := ipv4.NewPacketConn(conn)
 	if err := packetConn.JoinGroup(nil, &net.UDPAddr{IP: ipv4Group}); err != nil {
@@ -201,7 +195,7 @@ func newIP6Connection() (*connection, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("newIP6 local: %v", conn.LocalAddr())
+	// log.Printf("newIP6 local: %v", conn.LocalAddr())
 
 	packetConn := ipv6.NewPacketConn(conn)
 	if err := packetConn.JoinGroup(nil, &net.UDPAddr{IP: ipv6Group}); err != nil {
@@ -223,9 +217,10 @@ type Publisher struct {
 	id         string
 	service    string
 	payload    publisherPayload
-	serviceTTL int
+	serviceTTL uint
 	v4Conn     *connection
 	v6Conn     *connection
+	initErr    error
 }
 
 // ValidateServiceName ...
@@ -244,9 +239,40 @@ func ValidateServiceName(name string) error {
 }
 
 // NewPublisher ...
-func NewPublisher(service string, payload map[string]interface{}) (*Publisher, error) {
+func NewPublisher(service string) *Publisher {
+	p := &Publisher{
+		id:         randHexaDecimal(32),
+		service:    service,
+		serviceTTL: 60,
+	}
+
 	if err := ValidateServiceName(service); err != nil {
-		return nil, err
+		p.initErr = err
+	}
+
+	return p
+}
+
+// SetTTL ..
+func (p *Publisher) SetTTL(ttl uint) *Publisher {
+	if p.initErr != nil {
+		return p
+	}
+
+	// make sure the minimum ttl is 10 seconds
+	if ttl < 10 {
+		p.initErr = errors.New("TTL must be at least 10 seconds")
+	} else {
+		p.serviceTTL = ttl
+	}
+
+	return p
+}
+
+// SetPayload ...
+func (p *Publisher) SetPayload(payload map[string]interface{}) *Publisher {
+	if p.initErr != nil {
+		return p
 	}
 
 	var serialized []byte
@@ -254,44 +280,51 @@ func NewPublisher(service string, payload map[string]interface{}) (*Publisher, e
 		var err error
 		serialized, err = json.Marshal(payload)
 		if err != nil {
-			return nil, errors.New("unable to convert payload into json - " + err.Error())
+			p.initErr = errors.New("unable to convert payload into json - " + err.Error())
+			return p
 		}
 		if len(serialized) > MaxPayloadBytes {
-			return nil, fmt.Errorf("payload too large (%d bytes); must be smaller than 32KB after serialization", len(serialized))
+			p.initErr = fmt.Errorf("payload too large (%d bytes); must be smaller than 32KB after serialization", len(serialized))
+			return p
 		}
 	}
 
-	b := &Publisher{
-		service:    service,
-		payload:    serialized,
-		id:         randHexaDecimal(32),
-		serviceTTL: 60,
-	}
-	var err error
-	b.v4Conn, err = newIP4Connection()
-	if err != nil {
-		b.Stop()
-		return nil, fmt.Errorf("unable to v4 multicast broadcast - %v", err)
-	}
-	b.v6Conn, err = newIP6Connection()
-	if err != nil {
-		b.v4Conn.close()
-		return nil, fmt.Errorf("unable to v6 multicast broadcast - %v", err)
-	}
+	p.payload = serialized
 
-	go b.serve(b.v4Conn)
-	go b.serve(b.v6Conn)
-
-	return b, nil
+	return p
 }
 
-func (b *Publisher) serve(conn *connection) {
+// Start ...
+func (p *Publisher) Start() (*Publisher, error) {
+	if p.initErr != nil {
+		return p, p.initErr
+	}
+
+	var err error
+	p.v4Conn, err = newIP4Connection()
+	if err != nil {
+		p.Stop()
+		return p, fmt.Errorf("unable to v4 multicast broadcast - %v", err)
+	}
+	p.v6Conn, err = newIP6Connection()
+	if err != nil {
+		p.v4Conn.close()
+		return p, fmt.Errorf("unable to v6 multicast broadcast - %v", err)
+	}
+
+	go p.serve(p.v4Conn)
+	go p.serve(p.v6Conn)
+
+	return p, nil
+}
+
+func (p *Publisher) serve(conn *connection) {
 	announceMsg := message{
 		Type:         messageTypeServiceAnnouncement,
-		SenderID:     b.id,
-		ServiceName:  b.service,
-		payloadBytes: b.payload,
-		TTL:          60,
+		SenderID:     p.id,
+		ServiceName:  p.service,
+		payloadBytes: p.payload,
+		TTL:          p.serviceTTL,
 	}
 	err := conn.write(announceMsg)
 	if err != nil {
@@ -307,7 +340,7 @@ func (b *Publisher) serve(conn *connection) {
 	announce := make(chan bool)
 	go func() {
 		for {
-			time.Sleep(1 * time.Second)
+			time.Sleep(time.Duration(p.serviceTTL-4) * time.Second)
 			announce <- true
 		}
 	}()
@@ -317,7 +350,7 @@ func (b *Publisher) serve(conn *connection) {
 		case <-announce:
 			conn.write(announceMsg)
 		case msg := <-received:
-			if msg.SenderID == b.id {
+			if msg.SenderID == p.id {
 				// ignore messages we have sent
 				continue
 			}
@@ -338,7 +371,7 @@ func read(conn *connection, msgs chan<- *message) {
 }
 
 // Stop ...
-func (b *Publisher) Stop() {
+func (p *Publisher) Stop() {
 
 }
 
