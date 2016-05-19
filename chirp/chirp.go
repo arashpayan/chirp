@@ -4,7 +4,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"time"
 
 	"golang.org/x/net/ipv4"
 
@@ -50,36 +49,16 @@ func main() {
 }
 
 func xnet() {
-	en01, err := net.InterfaceByName("eno1")
-	if err != nil {
-		log.Fatal(err)
-	}
+	ip := net.ParseIP("fe80::92c1:4f30:dba:c8b8")
+	log.Printf("ip: %v", ip)
+	log.Printf("global unicast?: %v", ip.IsGlobalUnicast())
+	log.Printf("interface local multicast?: %v", ip.IsInterfaceLocalMulticast())
+	log.Printf("link local multicast?: %v", ip.IsLinkLocalMulticast())
+	log.Printf("link local unicast?: %v", ip.IsLinkLocalUnicast())
+	log.Printf("loopback?: %v", ip.IsLoopback())
+	log.Printf("multicast?: %v", ip.IsMulticast())
+	log.Printf("unspecified?: %v", ip.IsUnspecified())
 
-	group := net.IPv4(224, 0, 0, 224)
-	conn, err := net.ListenPacket("udp4", "0.0.0.0:6464")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-
-	packetConn := ipv4.NewPacketConn(conn)
-	if err := packetConn.JoinGroup(en01, &net.UDPAddr{IP: group}); err != nil {
-		log.Fatal(err)
-	}
-	if err := packetConn.SetControlMessage(ipv4.FlagSrc, true); err != nil {
-		log.Fatal(err)
-	}
-
-	groupAddr := &net.UDPAddr{IP: group, Port: 6464}
-	go listenTo(packetConn)
-	for {
-		log.Printf("chirping")
-		_, err = packetConn.WriteTo([]byte("chirp with x/net"), nil, groupAddr)
-		if err != nil {
-			log.Fatal(err)
-		}
-		time.Sleep(1 * time.Second)
-	}
 }
 
 func listenTo(packetConn *ipv4.PacketConn) {
@@ -107,14 +86,25 @@ func broadcast(context *cli.Context) error {
 }
 
 func listen(context *cli.Context) error {
-	// listener, err := chirp.Listen("*")
-	// if err != nil {
-	// 	return cli.NewExitError(err.Error(), 255)
-	// }
-	//
-	// for {
-	// 	msg := <-listener.Messages
-	// 	log.Printf("message: %v", msg)
-	// }
-	return nil
+	var serviceName string
+	if context.NArg() == 0 {
+		serviceName = "*"
+	} else {
+		serviceName = context.Args().First()
+	}
+	listener, err := chirp.NewListener(serviceName)
+	if err != nil {
+		return cli.NewExitError(err.Error(), 255)
+	}
+
+	for {
+		select {
+		case s := <-listener.Discovered:
+			log.Printf("discovered: %v", s)
+		case s := <-listener.Updated:
+			log.Printf("updated: %v", s)
+		case s := <-listener.Removed:
+			log.Printf("removed: %v", s)
+		}
+	}
 }
