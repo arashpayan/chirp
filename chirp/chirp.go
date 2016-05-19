@@ -77,7 +77,7 @@ func broadcast(context *cli.Context) error {
 		return cli.NewExitError("You need to specify a service name", 255)
 	}
 
-	_, err := chirp.NewBroadcaster(context.Args().First(), nil)
+	_, err := chirp.NewPublisher(context.Args().First(), nil)
 	if err != nil {
 		return cli.NewExitError(err.Error(), 255)
 	}

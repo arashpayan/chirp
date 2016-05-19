@@ -35,9 +35,9 @@ func (te temporaryError) Error() string {
 	return te.cause
 }
 
-type broadcasterPayload []byte
+type publisherPayload []byte
 
-func (b broadcasterPayload) MarshalJSON() ([]byte, error) {
+func (b publisherPayload) MarshalJSON() ([]byte, error) {
 	if len(b) == 0 {
 		return []byte("null"), nil
 	}
@@ -63,7 +63,7 @@ func validMessageType(msgType messageType) bool {
 
 type message struct {
 	srcIP        net.IP
-	payloadBytes broadcasterPayload
+	payloadBytes publisherPayload
 
 	Type        messageType            `json:"type"`
 	SenderID    string                 `json:"sender_id"`
@@ -218,11 +218,11 @@ func newIP6Connection() (*connection, error) {
 	}, nil
 }
 
-// Broadcaster ...
-type Broadcaster struct {
+// Publisher ...
+type Publisher struct {
 	id         string
 	service    string
-	payload    broadcasterPayload
+	payload    publisherPayload
 	serviceTTL int
 	v4Conn     *connection
 	v6Conn     *connection
@@ -243,8 +243,8 @@ func ValidateServiceName(name string) error {
 	return nil
 }
 
-// NewBroadcaster ...
-func NewBroadcaster(service string, payload map[string]interface{}) (*Broadcaster, error) {
+// NewPublisher ...
+func NewPublisher(service string, payload map[string]interface{}) (*Publisher, error) {
 	if err := ValidateServiceName(service); err != nil {
 		return nil, err
 	}
@@ -261,7 +261,7 @@ func NewBroadcaster(service string, payload map[string]interface{}) (*Broadcaste
 		}
 	}
 
-	b := &Broadcaster{
+	b := &Publisher{
 		service:    service,
 		payload:    serialized,
 		id:         randHexaDecimal(32),
@@ -285,7 +285,7 @@ func NewBroadcaster(service string, payload map[string]interface{}) (*Broadcaste
 	return b, nil
 }
 
-func (b *Broadcaster) serve(conn *connection) {
+func (b *Publisher) serve(conn *connection) {
 	announceMsg := message{
 		Type:         messageTypeServiceAnnouncement,
 		SenderID:     b.id,
@@ -338,13 +338,13 @@ func read(conn *connection, msgs chan<- *message) {
 }
 
 // Stop ...
-func (b *Broadcaster) Stop() {
+func (b *Publisher) Stop() {
 
 }
 
 // Service ...
 type Service struct {
-	broadcasterID  string
+	publisherID    string
 	v4IP           net.IP
 	v4IPExpiration time.Time
 	v6IP           net.IP
@@ -356,14 +356,14 @@ type Service struct {
 
 func (s Service) String() string {
 	tmp := map[string]interface{}{
-		"BroadcasterID": s.broadcasterID,
-		"Name":          s.Name,
-		"Payload":       s.Payload,
-		"TTL":           s.expirationTime.Unix(),
-		"V4":            s.v4IP,
-		"V4TTL":         s.v4IPExpiration.Unix(),
-		"V6":            s.v6IP,
-		"V6TTL":         s.v6IPExpiration.Unix(),
+		"PublisherID": s.publisherID,
+		"Name":        s.Name,
+		"Payload":     s.Payload,
+		"TTL":         s.expirationTime.Unix(),
+		"V4":          s.v4IP,
+		"V4TTL":       s.v4IPExpiration.Unix(),
+		"V6":          s.v6IP,
+		"V6TTL":       s.v6IPExpiration.Unix(),
 	}
 	buf, _ := json.Marshal(tmp)
 	return string(buf)
@@ -375,7 +375,7 @@ type Listener struct {
 	v4Conn      *connection
 	v6Conn      *connection
 	serviceName string
-	// broadcaster id => Service
+	// publisher id => Service
 	knownServices map[string]Service
 	discovered    chan Service
 	Discovered    <-chan Service
@@ -434,7 +434,7 @@ func (l *Listener) handleAnnouncement(msg *message) {
 			service.v6IPExpiration = ttl
 		}
 		service.Name = msg.ServiceName
-		service.broadcasterID = msg.SenderID
+		service.publisherID = msg.SenderID
 		service.Payload = msg.Payload
 		l.discovered <- service
 	} else { // we've seen this service before. check if we have a new ip address
