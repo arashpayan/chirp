@@ -21,7 +21,7 @@ func crandUint64n(n uint64) uint64 {
 var alphanumerics = strings.Split("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "")
 var hexadecimals = strings.Split("0123456789abcdef", "")
 
-func randHexaDecimal(length int) string {
+func randHexadecimal(length int) string {
 	s := ""
 	for i := 0; i < length; i++ {
 		idx := crandUint64n(16)

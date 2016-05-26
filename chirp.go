@@ -47,13 +47,14 @@ func (b publisherPayload) MarshalJSON() ([]byte, error) {
 type messageType string
 
 const (
-	messageTypeListenerJoined      messageType = "listener_joined"
-	messageTypeServiceAnnouncement             = "service_announcement"
+	messageTypeNewListener    messageType = "new_listener"
+	messageTypePublishService             = "publish"
+	messageTypeRemoveService              = "remove_service"
 )
 
 func validMessageType(msgType messageType) bool {
 	switch msgType {
-	case messageTypeListenerJoined:
+	case messageTypeNewListener:
 	default:
 		return false
 	}
@@ -221,6 +222,7 @@ type Publisher struct {
 	v4Conn     *connection
 	v6Conn     *connection
 	initErr    error
+	stop       chan bool
 }
 
 // ValidateServiceName ...
@@ -241,7 +243,7 @@ func ValidateServiceName(name string) error {
 // NewPublisher ...
 func NewPublisher(service string) *Publisher {
 	p := &Publisher{
-		id:         randHexaDecimal(32),
+		id:         randHexadecimal(32),
 		service:    service,
 		serviceTTL: 60,
 	}
@@ -320,7 +322,7 @@ func (p *Publisher) Start() (*Publisher, error) {
 
 func (p *Publisher) serve(conn *connection) {
 	announceMsg := message{
-		Type:         messageTypeServiceAnnouncement,
+		Type:         messageTypePublishService,
 		SenderID:     p.id,
 		ServiceName:  p.service,
 		payloadBytes: p.payload,
@@ -354,7 +356,10 @@ func (p *Publisher) serve(conn *connection) {
 				// ignore messages we have sent
 				continue
 			}
-			log.Printf("on: %+v", msg)
+			switch msg.Type {
+			case messageTypeNewListener:
+				conn.write(announceMsg)
+			}
 		}
 	}
 }
@@ -372,7 +377,12 @@ func read(conn *connection, msgs chan<- *message) {
 
 // Stop ...
 func (p *Publisher) Stop() {
-
+	if p.v4Conn != nil {
+		p.v4Conn.close()
+	}
+	if p.v6Conn != nil {
+		p.v6Conn.close()
+	}
 }
 
 // Service ...
@@ -421,7 +431,7 @@ type Listener struct {
 func (l *Listener) listen(conn *connection) {
 	// announce our presence to the group
 	helloMsg := message{
-		Type:     messageTypeListenerJoined,
+		Type:     messageTypeNewListener,
 		SenderID: l.id,
 	}
 	conn.write(helloMsg)
@@ -437,7 +447,7 @@ func (l *Listener) listen(conn *connection) {
 				continue
 			}
 			switch msg.Type {
-			case messageTypeServiceAnnouncement:
+			case messageTypePublishService:
 				l.handleAnnouncement(msg)
 			}
 		}
@@ -518,7 +528,7 @@ func NewListener(serviceName string) (*Listener, error) {
 	}
 
 	l := &Listener{
-		id:            randHexaDecimal(32),
+		id:            randHexadecimal(32),
 		serviceName:   serviceName,
 		knownServices: make(map[string]Service),
 		discovered:    make(chan Service),
