@@ -132,11 +132,15 @@ func (c *connection) read() (*message, error) {
 	if c.v4 != nil {
 		var cm *ipv4.ControlMessage
 		num, cm, _, err = c.v4.ReadFrom(c.readBuf)
-		srcIP = cm.Src
+		if err == nil {
+			srcIP = cm.Src
+		}
 	} else if c.v6 != nil {
 		var cm *ipv6.ControlMessage
 		num, cm, _, err = c.v6.ReadFrom(c.readBuf)
-		srcIP = cm.Src
+		if err == nil {
+			srcIP = cm.Src
+		}
 	} else {
 		panic("no packet connection found")
 	}
@@ -289,6 +293,7 @@ func NewPublisher(service string) *Publisher {
 		id:         randHexadecimal(32),
 		service:    service,
 		serviceTTL: 60,
+		stop:       make(chan bool),
 	}
 
 	if err := ValidateServiceName(service); err != nil {
@@ -364,6 +369,7 @@ func (p *Publisher) Start() (*Publisher, error) {
 }
 
 func (p *Publisher) serve(conn *connection) {
+	defer conn.close()
 	announceMsg := message{
 		Type:         messageTypePublishService,
 		SenderID:     p.id,
@@ -390,6 +396,7 @@ func (p *Publisher) serve(conn *connection) {
 		}
 	}()
 
+serveloop:
 	for {
 		select {
 		case <-announce:
@@ -403,8 +410,24 @@ func (p *Publisher) serve(conn *connection) {
 			case messageTypeNewListener:
 				conn.write(announceMsg)
 			}
+		case <-p.stop:
+			goodbyeMsg := message{
+				Type:        messageTypeRemoveService,
+				SenderID:    p.id,
+				ServiceName: p.service,
+			}
+			conn.write(goodbyeMsg)
+			break serveloop
 		}
 	}
+}
+
+// Stop ...
+func (p *Publisher) Stop() {
+	// closing this channel notifies our serving goroutines to clean up
+	close(p.stop)
+	// give our goroutines enough time to send out service removal messages
+	time.Sleep(50 * time.Millisecond)
 }
 
 func read(conn *connection, msgs chan<- *message) {
@@ -412,19 +435,10 @@ func read(conn *connection, msgs chan<- *message) {
 		msg, err := conn.read()
 		if err != nil {
 			log.Print(err)
-			continue
+			close(msgs)
+			return
 		}
 		msgs <- msg
-	}
-}
-
-// Stop ...
-func (p *Publisher) Stop() {
-	if p.v4Conn != nil {
-		p.v4Conn.close()
-	}
-	if p.v6Conn != nil {
-		p.v6Conn.close()
 	}
 }
 
@@ -455,6 +469,26 @@ func (s Service) String() string {
 	return string(buf)
 }
 
+// IPv4 returns the IPv4 address of the service publisher. If there is no
+// v4 IP associated with the publisher, returns nil.
+func (s Service) IPv4() net.IP {
+	if s.v4IP == nil {
+		return nil
+	}
+
+	return s.v4IP.To4()
+}
+
+// IPv6 returns the IPv6 address of the service publisher. If there is no
+// v6 IP associated with the publisher, returns nil.
+func (s Service) IPv6() net.IP {
+	if s.v6IP == nil {
+		return nil
+	}
+
+	return s.v6IP.To16()
+}
+
 // Listener ...
 type Listener struct {
 	id          string
@@ -463,12 +497,44 @@ type Listener struct {
 	serviceName string
 	// publisher id => Service
 	knownServices map[string]Service
-	discovered    chan Service
-	Discovered    <-chan Service
-	updated       chan Service
-	Updated       <-chan Service
-	removed       chan Service
-	Removed       <-chan Service
+	ServiceEvents <-chan ServiceEvent
+	serviceEvents chan ServiceEvent
+	stop          chan bool
+}
+
+// NewListener ...
+func NewListener(serviceName string) (*Listener, error) {
+	if serviceName != "*" {
+		if err := ValidateServiceName(serviceName); err != nil {
+			return nil, err
+		}
+	}
+
+	l := &Listener{
+		id:            randHexadecimal(32),
+		serviceName:   serviceName,
+		stop:          make(chan bool),
+		knownServices: make(map[string]Service),
+		serviceEvents: make(chan ServiceEvent),
+	}
+	// initialize the read only version of the channel for the end user
+	l.ServiceEvents = l.serviceEvents
+
+	var err error
+	l.v4Conn, err = newIP4Connection()
+	if err != nil {
+		return nil, fmt.Errorf("unable to v4 multicast listen - %v", err)
+	}
+	l.v6Conn, err = newIP6Connection()
+	if err != nil {
+		l.v4Conn.close()
+		return nil, fmt.Errorf("unable to v6 multicast listen - %v", err)
+	}
+
+	go l.listen(l.v4Conn)
+	go l.listen(l.v6Conn)
+
+	return l, nil
 }
 
 func (l *Listener) listen(conn *connection) {
@@ -487,12 +553,31 @@ func (l *Listener) listen(conn *connection) {
 		}
 		switch msg.Type {
 		case messageTypePublishService:
-			l.handleAnnouncement(msg)
+			l.handlePublish(msg)
+		case messageTypeRemoveService:
+			l.handleRemoval(msg)
 		}
 	}
 }
 
-func (l *Listener) handleAnnouncement(msg *message) {
+func (l *Listener) handleRemoval(msg *message) {
+	// Is this a service that we're interested in?
+	if l.serviceName != "*" {
+		if msg.ServiceName != l.serviceName {
+			return
+		}
+	}
+	// check if we have a record of this service
+	service, ok := l.knownServices[msg.SenderID]
+	if !ok {
+		return
+	}
+	delete(l.knownServices, msg.SenderID)
+	se := ServiceEvent{Service: service, EventType: ServiceRemoved}
+	l.serviceEvents <- se
+}
+
+func (l *Listener) handlePublish(msg *message) {
 	// Is this a service that we're interested in?
 	if l.serviceName != "*" {
 		if msg.ServiceName != l.serviceName {
@@ -517,7 +602,8 @@ func (l *Listener) handleAnnouncement(msg *message) {
 		service.Name = msg.ServiceName
 		service.publisherID = msg.SenderID
 		service.Payload = msg.Payload
-		l.discovered <- service
+		se := ServiceEvent{Service: service, EventType: ServicePublished}
+		l.serviceEvents <- se
 	} else { // we've seen this service before. check if we have a new ip address
 		updatedIP := false
 		if msg.srcIP.To4() != nil {
@@ -550,45 +636,31 @@ func (l *Listener) handleAnnouncement(msg *message) {
 			}
 		}
 		if updatedIP {
-			l.updated <- service
+			se := ServiceEvent{Service: service, EventType: ServiceUpdated}
+			l.serviceEvents <- se
 		}
 	}
 	// log.Printf("service: %v", service)
 	l.knownServices[msg.SenderID] = service
 }
 
-// NewListener ...
-func NewListener(serviceName string) (*Listener, error) {
-	if serviceName != "*" {
-		if err := ValidateServiceName(serviceName); err != nil {
-			return nil, err
-		}
-	}
+// Stop listening. The Listener can't be reused after this is called.
+func (l *Listener) Stop() {
+	close(l.stop)
+}
 
-	l := &Listener{
-		id:            randHexadecimal(32),
-		serviceName:   serviceName,
-		knownServices: make(map[string]Service),
-		discovered:    make(chan Service),
-		updated:       make(chan Service),
-	}
-	// initialize the read only version of the channels for the end user
-	l.Discovered = l.discovered
-	l.Updated = l.updated
+// EventType ...
+type EventType string
 
-	var err error
-	l.v4Conn, err = newIP4Connection()
-	if err != nil {
-		return nil, fmt.Errorf("unable to v4 multicast listen - %v", err)
-	}
-	l.v6Conn, err = newIP6Connection()
-	if err != nil {
-		l.v4Conn.close()
-		return nil, fmt.Errorf("unable to v6 multicast listen - %v", err)
-	}
+// events
+const (
+	ServicePublished EventType = "service_published"
+	ServiceUpdated             = "service_updated"
+	ServiceRemoved             = "service_removed"
+)
 
-	go l.listen(l.v4Conn)
-	go l.listen(l.v6Conn)
-
-	return l, nil
+// ServiceEvent ...
+type ServiceEvent struct {
+	Service
+	EventType
 }

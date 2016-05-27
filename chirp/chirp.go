@@ -1,8 +1,8 @@
 package main
 
 import (
+	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,7 +19,6 @@ func init() {
 	signal.Notify(systemSigChan, syscall.SIGINT)
 	go func() {
 		<-systemSigChan
-		// log.Printf("Signal %v. Exiting", sig)
 		if publisher != nil {
 			publisher.Stop()
 		}
@@ -65,16 +64,6 @@ func main() {
 }
 
 func xnet() {
-	ip := net.ParseIP("fe80::92c1:4f30:dba:c8b8")
-	log.Printf("ip: %v", ip)
-	log.Printf("global unicast?: %v", ip.IsGlobalUnicast())
-	log.Printf("interface local multicast?: %v", ip.IsInterfaceLocalMulticast())
-	log.Printf("link local multicast?: %v", ip.IsLinkLocalMulticast())
-	log.Printf("link local unicast?: %v", ip.IsLinkLocalUnicast())
-	log.Printf("loopback?: %v", ip.IsLoopback())
-	log.Printf("multicast?: %v", ip.IsMulticast())
-	log.Printf("unspecified?: %v", ip.IsUnspecified())
-
 }
 
 func broadcast(context *cli.Context) error {
@@ -87,6 +76,7 @@ func broadcast(context *cli.Context) error {
 	if err != nil {
 		return cli.NewExitError(err.Error(), 255)
 	}
+	fmt.Printf("Published '%s'...\n", context.Args().First())
 
 	select {}
 }
@@ -103,14 +93,46 @@ func listen(context *cli.Context) error {
 		return cli.NewExitError(err.Error(), 255)
 	}
 
-	for {
-		select {
-		case s := <-listener.Discovered:
-			log.Printf("discovered: %v", s)
-		case s := <-listener.Updated:
-			log.Printf("updated: %v", s)
-		case s := <-listener.Removed:
-			log.Printf("removed: %v", s)
+	if serviceName == "*" {
+		fmt.Println("Listening for all services...")
+	} else {
+		fmt.Printf("Listening for '%s' services...", serviceName)
+	}
+
+	for se := range listener.ServiceEvents {
+		switch se.EventType {
+		case chirp.ServicePublished:
+			var ip4 string
+			var ip6 string
+			if se.Service.IPv4() != nil {
+				ip4 = se.Service.IPv4().String()
+			}
+			if se.Service.IPv6() != nil {
+				ip6 = se.Service.IPv6().String()
+			}
+			fmt.Printf("+ %s\tIPv4: %s \tIPv6: %s\n", se.Service.Name, ip4, ip6)
+		case chirp.ServiceRemoved:
+			var ip4 string
+			var ip6 string
+			if se.Service.IPv4() != nil {
+				ip4 = se.Service.IPv4().String()
+			}
+			if se.Service.IPv6() != nil {
+				ip6 = se.Service.IPv6().String()
+			}
+			fmt.Printf("- %s\tIPv4: %s \tIPv6: %s\n", se.Service.Name, ip4, ip6)
+		case chirp.ServiceUpdated:
+			var ip4 string
+			var ip6 string
+			if se.Service.IPv4() != nil {
+				ip4 = se.Service.IPv4().String()
+			}
+			if se.Service.IPv6() != nil {
+				ip6 = se.Service.IPv6().String()
+			}
+			fmt.Printf("| %s\tIPv4: %s \tIPv6: %s\n", se.Service.Name, ip4, ip6)
 		}
 	}
+
+	return nil
 }
