@@ -9,8 +9,6 @@ import (
 	"regexp"
 	"time"
 
-	reuse "github.com/jbenet/go-reuseport"
-
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
@@ -170,17 +168,38 @@ func (c *connection) close() error {
 }
 
 func newIP4Connection() (*connection, error) {
-	// conn, err := net.ListenPacket("udp4", fmt.Sprintf("0.0.0.0:%d", chirpPort))
-	conn, err := reuse.ListenPacket("udp4", fmt.Sprintf("0.0.0.0:%d", chirpPort))
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ipv4Group, Port: chirpPort})
 	if err != nil {
 		return nil, err
 	}
-	// log.Printf("newIP4 local: %v", conn.LocalAddr())
 
 	packetConn := ipv4.NewPacketConn(conn)
-	if err := packetConn.JoinGroup(nil, &net.UDPAddr{IP: ipv4Group}); err != nil {
-		return nil, errors.New("unable to join chirp multicast group - " + err.Error())
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		conn.Close()
+		return nil, errors.New("unable to retrieve interfaces - " + err.Error())
 	}
+	// join the group on any available interfaces
+	errCount := 0
+	mcastInterfaces := 0
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagMulticast != net.FlagMulticast {
+			continue
+		}
+		mcastInterfaces++
+		if err := packetConn.JoinGroup(&iface, &net.UDPAddr{IP: ipv4Group}); err != nil {
+			errCount++
+		}
+	}
+	if mcastInterfaces == 0 {
+		conn.Close()
+		return nil, errors.New("no multicast network interfaces available")
+	}
+	if errCount == mcastInterfaces {
+		conn.Close()
+		return nil, errors.New("unable to join any multicast interfaces")
+	}
+
 	if err := packetConn.SetControlMessage(ipv4.FlagSrc, true); err != nil {
 		return nil, errors.New("unable to set control message ipv4.FlagSrc - " + err.Error())
 	}
@@ -192,16 +211,40 @@ func newIP4Connection() (*connection, error) {
 }
 
 func newIP6Connection() (*connection, error) {
-	conn, err := reuse.ListenPacket("udp6", fmt.Sprintf("[::]:%d", chirpPort))
+	conn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: ipv6Group, Port: chirpPort})
+	// conn, err := net.ListenPacket("udp6", fmt.Sprintf("[%s]:%d", ipv6Group.String(), chirpPort))
 	if err != nil {
 		return nil, err
 	}
-	// log.Printf("newIP6 local: %v", conn.LocalAddr())
 
 	packetConn := ipv6.NewPacketConn(conn)
-	if err := packetConn.JoinGroup(nil, &net.UDPAddr{IP: ipv6Group}); err != nil {
-		return nil, errors.New("unable to join chirp multicast group - " + err.Error())
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		conn.Close()
+		return nil, errors.New("unable to retrieve interfaces - " + err.Error())
 	}
+
+	// join the group on any available interfaces
+	errCount := 0
+	mcastInterfaces := 0
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagMulticast != net.FlagMulticast {
+			continue
+		}
+		mcastInterfaces++
+		if err := packetConn.JoinGroup(&iface, &net.UDPAddr{IP: ipv6Group}); err != nil {
+			errCount++
+		}
+	}
+	if mcastInterfaces == 0 {
+		conn.Close()
+		return nil, errors.New("no multicast network interfaces available")
+	}
+	if errCount == mcastInterfaces {
+		conn.Close()
+		return nil, errors.New("unable to join any multicast interfaces")
+	}
+
 	// Why do I have to specify ipv6.FlagDst to get the Src address on each packet?
 	if err := packetConn.SetControlMessage(ipv6.FlagDst, true); err != nil {
 		return nil, errors.New("unable to set control message ipv6.FlagDst: " + err.Error())
@@ -438,18 +481,13 @@ func (l *Listener) listen(conn *connection) {
 
 	received := make(chan *message)
 	go read(conn, received)
-	for {
-		select {
-		case msg := <-received:
-			// log.Printf("on: %+v", msg)
-			// ignore our own messages
-			if msg.SenderID == l.id {
-				continue
-			}
-			switch msg.Type {
-			case messageTypePublishService:
-				l.handleAnnouncement(msg)
-			}
+	for msg := range received {
+		if msg.SenderID == l.id {
+			continue
+		}
+		switch msg.Type {
+		case messageTypePublishService:
+			l.handleAnnouncement(msg)
 		}
 	}
 }
