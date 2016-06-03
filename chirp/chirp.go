@@ -82,7 +82,7 @@ func broadcast(context *cli.Context) error {
 		return cli.NewExitError("You need to specify a service name", 255)
 	}
 
-	publisher := chirp.NewPublisher(context.Args().First())
+	publisher = chirp.NewPublisher(context.Args().First())
 	// check for a payload
 	if context.String("payload") != "" {
 		log.Printf("payload: %v", context.String("payload"))
