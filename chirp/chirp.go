@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -8,7 +9,7 @@ import (
 	"syscall"
 
 	"github.com/arashpayan/chirp"
-	"github.com/codegangsta/cli"
+	"github.com/urfave/cli"
 )
 
 var publisher *chirp.Publisher
@@ -39,6 +40,16 @@ func main() {
 		{
 			Name:  "broadcast",
 			Usage: "Broadcast a service",
+			Flags: []cli.Flag{
+				cli.StringFlag{
+					Name:  "payload,p",
+					Usage: "JSON string representing the service payload",
+				},
+				cli.IntFlag{
+					Name:  "ttl",
+					Value: 60,
+					Usage: "Time to live of the service. You probably don't need to change this."},
+			},
 			Action: func(c *cli.Context) error {
 				return broadcast(c)
 			},
@@ -71,8 +82,25 @@ func broadcast(context *cli.Context) error {
 		return cli.NewExitError("You need to specify a service name", 255)
 	}
 
-	var err error
-	publisher, err = chirp.NewPublisher(context.Args().First()).SetTTL(10).Start()
+	publisher := chirp.NewPublisher(context.Args().First())
+	// check for a payload
+	if context.String("payload") != "" {
+		log.Printf("payload: %v", context.String("payload"))
+		jsonStr := context.String("payload")
+		payload := make(map[string]interface{})
+		err := json.Unmarshal([]byte(jsonStr), &payload)
+		if err != nil {
+			return cli.NewExitError("Unable to parse payload JSON: "+err.Error(), 255)
+		}
+		publisher.SetPayload(payload)
+	}
+	ttl := context.Int("ttl")
+	if ttl < 0 {
+		return cli.NewExitError("TTL must be a positive integer", 255)
+	}
+	publisher.SetTTL(uint(ttl))
+
+	_, err := publisher.Start()
 	if err != nil {
 		return cli.NewExitError(err.Error(), 255)
 	}
