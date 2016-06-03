@@ -548,6 +548,7 @@ func (l *Listener) listen(conn *connection) {
 	received := make(chan *message)
 	go read(conn, received)
 	for msg := range received {
+		// not interested in our own messages
 		if msg.SenderID == l.id {
 			continue
 		}
