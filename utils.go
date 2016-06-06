@@ -2,6 +2,7 @@ package chirp
 
 import (
 	crand "crypto/rand"
+	"encoding/hex"
 	"math/big"
 	"math/rand"
 	"strings"
@@ -19,16 +20,18 @@ func crandUint64n(n uint64) uint64 {
 }
 
 var alphanumerics = strings.Split("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "")
-var hexadecimals = strings.Split("0123456789abcdef", "")
 
-func randHexadecimal(length int) string {
-	s := ""
-	for i := 0; i < length; i++ {
-		idx := crandUint64n(16)
-		s += hexadecimals[idx]
+func randSenderID() string {
+	randData := make([]byte, 16)
+	_, err := crand.Read(randData)
+	if err != nil {
+		// fall back to non-crypto rand
+		_, err = rand.Read(randData)
+		if err != nil {
+			panic("unable to get any random data to create a sender id")
+		}
 	}
-
-	return s
+	return hex.EncodeToString(randData)
 }
 
 func randAlphaNum(length int) string {

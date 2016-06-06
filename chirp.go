@@ -1,6 +1,7 @@
 package chirp
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,30 +72,55 @@ type message struct {
 	TTL         uint                   `json:"ttl"`
 }
 
-func (m *message) valid() bool {
+func (m *message) valid() error {
 	if m == nil {
-		return false
+		return errors.New("message is nil")
 	}
 
-	if !validMessageType(m.Type) {
-		return false
+	idBytes, err := hex.DecodeString(m.SenderID)
+	if err != nil {
+		return errors.New("unable to decode 'sender_id' from hex")
+	}
+	if len(idBytes) != 16 {
+		return fmt.Errorf("'sender_id' must be 16 bytes long (found %d)", len(idBytes))
 	}
 
-	if err := ValidateServiceName(m.ServiceName); err != nil {
-		return false
+	switch m.Type {
+	case messageTypeNewListener:
+	case messageTypePublishService:
+		if err := ValidateServiceName(m.ServiceName); err != nil {
+			return err
+		}
+		if m.TTL < 10 {
+			return errors.New("ttl must be at least 10 seconds")
+		}
+	case messageTypeRemoveService:
+		if err := ValidateServiceName(m.ServiceName); err != nil {
+			return err
+		}
+	default:
+		// unknown message type
+		return errors.New("unknown message type")
 	}
 
-	return true
+	return nil
 }
 
 func (m message) MarshalJSON() ([]byte, error) {
 	jsonMsg := map[string]interface{}{
-		"type":         m.Type,
-		"sender_id":    m.SenderID,
-		"service_name": m.ServiceName,
+		"type":      m.Type,
+		"sender_id": m.SenderID,
 	}
-	if m.payloadBytes != nil {
-		jsonMsg["payload"] = m.payloadBytes
+	switch m.Type {
+	case messageTypeNewListener:
+	case messageTypePublishService:
+		jsonMsg["service_name"] = m.ServiceName
+		jsonMsg["ttl"] = m.TTL
+		if m.payloadBytes != nil {
+			jsonMsg["payload"] = m.payloadBytes
+		}
+	case messageTypeRemoveService:
+		jsonMsg["service_name"] = m.ServiceName
 	}
 
 	return json.Marshal(jsonMsg)
@@ -112,7 +138,7 @@ type connection struct {
 func (c *connection) write(msg interface{}) error {
 	buf, err := json.Marshal(msg)
 	if err != nil {
-		return errors.New("unable to marshall message - " + err.Error())
+		return errors.New("unable to marshal message - " + err.Error())
 	}
 	if c.v4 != nil {
 		c.v4.WriteTo(buf, nil, c.groupAddr)
@@ -155,7 +181,11 @@ func (c *connection) read() (*message, error) {
 	msg := &message{srcIP: srcIP}
 	err = json.Unmarshal(c.readBuf[:num], msg)
 	if err != nil {
-		return nil, errors.New("received corrupt message - " + err.Error())
+		return nil, temporaryError{cause: "received corrupt message - " + err.Error()}
+	}
+
+	if err := msg.valid(); err != nil {
+		return nil, temporaryError{cause: "received an invalid message: " + err.Error()}
 	}
 
 	return msg, nil
@@ -216,7 +246,6 @@ func newIP4Connection() (*connection, error) {
 
 func newIP6Connection() (*connection, error) {
 	conn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: ipv6Group, Port: chirpPort})
-	// conn, err := net.ListenPacket("udp6", fmt.Sprintf("[%s]:%d", ipv6Group.String(), chirpPort))
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +319,7 @@ func ValidateServiceName(name string) error {
 // NewPublisher ...
 func NewPublisher(service string) *Publisher {
 	p := &Publisher{
-		id:         randHexadecimal(32),
+		id:         randSenderID(),
 		service:    service,
 		serviceTTL: 60,
 		stop:       make(chan bool),
@@ -434,10 +463,16 @@ func read(conn *connection, msgs chan<- *message) {
 	for {
 		msg, err := conn.read()
 		if err != nil {
-			log.Print(err)
-			close(msgs)
-			return
+			// if this is not a transient error, then we need to get out of here
+			if _, ok := err.(temporaryError); !ok {
+				log.Print(err)
+				close(msgs)
+				return
+			}
+			log.Print("temp err: " + err.Error())
+			continue
 		}
+
 		msgs <- msg
 	}
 }
@@ -511,7 +546,7 @@ func NewListener(serviceName string) (*Listener, error) {
 	}
 
 	l := &Listener{
-		id:            randHexadecimal(32),
+		id:            randSenderID(),
 		serviceName:   serviceName,
 		stop:          make(chan bool),
 		knownServices: make(map[string]Service),
@@ -563,11 +598,10 @@ func (l *Listener) listen(conn *connection) {
 
 func (l *Listener) handleRemoval(msg *message) {
 	// Is this a service that we're interested in?
-	if l.serviceName != "*" {
-		if msg.ServiceName != l.serviceName {
-			return
-		}
+	if l.serviceName != "*" && msg.ServiceName != l.serviceName {
+		return
 	}
+
 	// check if we have a record of this service
 	service, ok := l.knownServices[msg.SenderID]
 	if !ok {
@@ -580,10 +614,8 @@ func (l *Listener) handleRemoval(msg *message) {
 
 func (l *Listener) handlePublish(msg *message) {
 	// Is this a service that we're interested in?
-	if l.serviceName != "*" {
-		if msg.ServiceName != l.serviceName {
-			return
-		}
+	if l.serviceName != "*" && msg.ServiceName != l.serviceName {
+		return
 	}
 	// check if we have a record for this service already
 	// log.Printf("srcIP: %s", msg.srcIP)

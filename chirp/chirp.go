@@ -33,7 +33,7 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "chirp"
 	app.EnableBashCompletion = true
-	app.Usage = "Broadcast and listen to network services using the chirp protocol"
+	app.Usage = "Broadcast and listen for network services using the chirp protocol"
 	app.Version = "0.1"
 
 	app.Commands = []cli.Command{
@@ -61,14 +61,14 @@ func main() {
 				return listen(c)
 			},
 		},
-		{
-			Name:  "test",
-			Usage: "test",
-			Action: func(c *cli.Context) error {
-				xnet()
-				return nil
-			},
-		},
+		// {
+		// 	Name:  "test",
+		// 	Usage: "test",
+		// 	Action: func(c *cli.Context) error {
+		// 		xnet()
+		// 		return nil
+		// 	},
+		// },
 	}
 
 	app.Run(os.Args)
