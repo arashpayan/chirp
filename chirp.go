@@ -51,16 +51,6 @@ const (
 	messageTypeRemoveService              = "remove_service"
 )
 
-func validMessageType(msgType messageType) bool {
-	switch msgType {
-	case messageTypeNewListener:
-	default:
-		return false
-	}
-
-	return true
-}
-
 type message struct {
 	srcIP        net.IP
 	payloadBytes publisherPayload
@@ -84,9 +74,18 @@ func (m *message) valid() error {
 	if len(idBytes) != 16 {
 		return fmt.Errorf("'sender_id' must be 16 bytes long (found %d)", len(idBytes))
 	}
+	if m.ServiceName == "" {
+		return fmt.Errorf("'service_name' is missing")
+	}
 
 	switch m.Type {
 	case messageTypeNewListener:
+		// wildcard is acceptable for listeners
+		if m.ServiceName != "*" {
+			if err := ValidateServiceName(m.ServiceName); err != nil {
+				return err
+			}
+		}
 	case messageTypePublishService:
 		if err := ValidateServiceName(m.ServiceName); err != nil {
 			return err
@@ -108,19 +107,18 @@ func (m *message) valid() error {
 
 func (m message) MarshalJSON() ([]byte, error) {
 	jsonMsg := map[string]interface{}{
-		"type":      m.Type,
-		"sender_id": m.SenderID,
+		"type":         m.Type,
+		"sender_id":    m.SenderID,
+		"service_name": m.ServiceName,
 	}
 	switch m.Type {
 	case messageTypeNewListener:
+	case messageTypeRemoveService:
 	case messageTypePublishService:
-		jsonMsg["service_name"] = m.ServiceName
 		jsonMsg["ttl"] = m.TTL
 		if m.payloadBytes != nil {
 			jsonMsg["payload"] = m.payloadBytes
 		}
-	case messageTypeRemoveService:
-		jsonMsg["service_name"] = m.ServiceName
 	}
 
 	return json.Marshal(jsonMsg)
@@ -437,7 +435,10 @@ serveloop:
 			}
 			switch msg.Type {
 			case messageTypeNewListener:
-				conn.write(announceMsg)
+				if msg.ServiceName == "*" || msg.ServiceName == p.service {
+					log.Printf("sending announce to listener")
+					conn.write(announceMsg)
+				}
 			}
 		case <-p.stop:
 			goodbyeMsg := message{
@@ -575,8 +576,9 @@ func NewListener(serviceName string) (*Listener, error) {
 func (l *Listener) listen(conn *connection) {
 	// announce our presence to the group
 	helloMsg := message{
-		Type:     messageTypeNewListener,
-		SenderID: l.id,
+		Type:        messageTypeNewListener,
+		SenderID:    l.id,
+		ServiceName: l.serviceName,
 	}
 	conn.write(helloMsg)
 
