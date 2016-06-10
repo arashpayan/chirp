@@ -418,8 +418,12 @@ func (p *Publisher) serve(conn *connection) {
 	announce := make(chan bool)
 	go func() {
 		for {
-			time.Sleep(time.Duration(p.serviceTTL-4) * time.Second)
-			announce <- true
+			select {
+			case <-time.After(time.Duration(p.serviceTTL-4) * time.Second):
+				announce <- true
+			case <-p.stop:
+				return
+			}
 		}
 	}()
 
@@ -436,7 +440,6 @@ serveloop:
 			switch msg.Type {
 			case messageTypeNewListener:
 				if msg.ServiceName == "*" || msg.ServiceName == p.service {
-					log.Printf("sending announce to listener")
 					conn.write(announceMsg)
 				}
 			}
