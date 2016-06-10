@@ -570,13 +570,35 @@ func NewListener(serviceName string) (*Listener, error) {
 		return nil, fmt.Errorf("unable to v6 multicast listen - %v", err)
 	}
 
-	go l.listen(l.v4Conn)
-	go l.listen(l.v6Conn)
+	// start a goroutine to handle all the incoming messages from both connections
+	messageHandler := make(chan *message)
+	go func() {
+		for {
+			select {
+			case msg := <-messageHandler:
+				// not interested in our own messages
+				if msg.SenderID == l.id {
+					continue
+				}
+				switch msg.Type {
+				case messageTypePublishService:
+					l.handlePublish(msg)
+				case messageTypeRemoveService:
+					l.handleRemoval(msg)
+				}
+			case <-l.stop:
+				return
+			}
+		}
+	}()
+
+	go l.listen(l.v4Conn, messageHandler)
+	go l.listen(l.v6Conn, messageHandler)
 
 	return l, nil
 }
 
-func (l *Listener) listen(conn *connection) {
+func (l *Listener) listen(conn *connection, messageHandler chan<- *message) {
 	// announce our presence to the group
 	helloMsg := message{
 		Type:        messageTypeNewListener,
@@ -588,16 +610,7 @@ func (l *Listener) listen(conn *connection) {
 	received := make(chan *message)
 	go read(conn, received)
 	for msg := range received {
-		// not interested in our own messages
-		if msg.SenderID == l.id {
-			continue
-		}
-		switch msg.Type {
-		case messageTypePublishService:
-			l.handlePublish(msg)
-		case messageTypeRemoveService:
-			l.handleRemoval(msg)
-		}
+		messageHandler <- msg
 	}
 }
 
