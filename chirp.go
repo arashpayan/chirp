@@ -609,6 +609,8 @@ func (l *Listener) listen(conn *connection, messageHandler chan<- *message) {
 
 	received := make(chan *message)
 	go read(conn, received)
+	// We'll stop getting messages when the connection is closed, because then
+	// the reading goroutine from the line above will close the channel
 	for msg := range received {
 		messageHandler <- msg
 	}
