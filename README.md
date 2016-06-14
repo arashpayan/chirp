@@ -1,3 +1,6 @@
+[![GoDoc](https://godoc.org/github.com/arashpayan/chirp?status.svg)](https://godoc.org/github.com/arashpayan/chirp)
+[![Go Report Card](https://goreportcard.com/badge/github.com/arashpayan/chirp)](https://goreportcard.com/badge/github.com/arashpayan/chirp)
+
 Chirp (Go)
 ----------
 
