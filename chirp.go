@@ -469,7 +469,6 @@ func read(conn *connection, msgs chan<- *message) {
 		if err != nil {
 			// if this is not a transient error, then we need to get out of here
 			if _, ok := err.(temporaryError); !ok {
-				log.Print(err)
 				close(msgs)
 				return
 			}
