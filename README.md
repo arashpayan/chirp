@@ -1,15 +1,17 @@
 Chirp (Go)
 ----------
 
-Chirp is a network service discovery protocol. In short, it's a simpler and more reliable alternative to mDNS/Bonjour. For more information about the protocol and libraries for different languages, see the [Chirp web site](https://chirp.arashpayan.com).
+Chirp is a network service discovery protocol. In short, it's a simpler and more reliable alternative to mDNS/Bonjour. For more information about the protocol and libraries for different languages, see the [official Chirp homepage](https://chirp.arashpayan.com).
 
-Installation & Usage
---------------------
+Installation
+------------
 Install with:
 ```
 go get github.com/arashpayan/chirp
 ```
 
+Usage
+-----
 Publishing a service:
 ```
 // Create and start a publisher
@@ -18,8 +20,9 @@ publisher, _ := chirp.NewPublisher("tld.domain.service").Start()
 // Stop the publisher when you're done
 publisher.Stop()
 
-// Optionally, you can specify a map of values that will be
-// broadcasted along with your service.
+// Optionally, you can specify a map with arbitrary
+// keys and values that will be broadcasted along
+// with your service.
 payload := map[string]interface{}{
     "port": 22,
     "display_name": "My Awesome SSH"
