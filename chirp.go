@@ -380,18 +380,19 @@ func (p *Publisher) Start() (*Publisher, error) {
 	var err error
 	p.v4Conn, err = newIP4Connection()
 	if err != nil {
-		p.Stop()
+		p.Stop() // a v4 connection is required, so bail if we can't start it
 		return p, fmt.Errorf("unable to v4 multicast broadcast - %v", err)
 	}
 	p.v6Conn, err = newIP6Connection()
 	if err != nil {
-		p.v4Conn.close()
-		return p, fmt.Errorf("unable to v6 multicast broadcast - %v", err)
+		// v6 is a nice to have, so don't consider it an error if it fails
+		log.Printf("unable to v6 multicast broadcast - %v", err)
 	}
 
 	go p.serve(p.v4Conn)
-	go p.serve(p.v6Conn)
-
+	if p.v6Conn != nil {
+		go p.serve(p.v6Conn)
+	}
 	return p, nil
 }
 
