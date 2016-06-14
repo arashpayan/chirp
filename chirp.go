@@ -570,9 +570,12 @@ func NewListener(serviceName string) (*Listener, error) {
 		return nil, fmt.Errorf("unable to v6 multicast listen - %v", err)
 	}
 
-	// start a goroutine to handle all the incoming messages from both connections
+	// Start a goroutine to handle all the incoming messages from both
+	// connection, and also remove services that have expired
 	messageHandler := make(chan *message)
+	expirationTicker := time.NewTicker(10 * time.Second)
 	go func() {
+		defer expirationTicker.Stop()
 		for {
 			select {
 			case msg := <-messageHandler:
@@ -585,6 +588,14 @@ func NewListener(serviceName string) (*Listener, error) {
 					l.handlePublish(msg)
 				case messageTypeRemoveService:
 					l.handleRemoval(msg)
+				}
+			case <-expirationTicker.C:
+				for pubID, service := range l.knownServices {
+					if service.expirationTime.Before(time.Now()) {
+						delete(l.knownServices, pubID)
+						se := ServiceEvent{Service: service, EventType: ServiceRemoved}
+						l.serviceEvents <- se
+					}
 				}
 			case <-l.stop:
 				return
