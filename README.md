@@ -3,7 +3,6 @@
 
 Chirp (Go)
 ----------
-
 Chirp is a network service discovery protocol. In short, it's a simpler and more reliable alternative to mDNS/Bonjour. For more information about the protocol and libraries for different languages, see the [official Chirp homepage](https://chirp.arashpayan.com).
 
 Installation
@@ -40,7 +39,7 @@ publisher, _ := chirp.NewPublisher("tld.domain.service").
                       Start()
 ```
 
-Listening for services
+Listening for services:
 ```
 // Start the listener. You can pass '*' for the service name
 // to listen for all services.
