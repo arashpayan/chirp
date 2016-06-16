@@ -140,7 +140,11 @@ func (c *connection) write(msg interface{}) error {
 	}
 	if c.v4 != nil {
 		c.v4.WriteTo(buf, nil, c.groupAddr)
+		time.Sleep(20 * time.Millisecond)
+		c.v4.WriteTo(buf, nil, c.groupAddr)
 	} else if c.v6 != nil {
+		c.v6.WriteTo(buf, nil, c.groupAddr)
+		time.Sleep(20 * time.Millisecond)
 		c.v6.WriteTo(buf, nil, c.groupAddr)
 	} else {
 		panic("no packet connection found")
@@ -176,6 +180,7 @@ func (c *connection) read() (*message, error) {
 		return nil, temporaryError{cause: "message was too big"}
 	}
 
+	// log.Printf("from: %v, read: %s", srcIP, string(c.readBuf[:num]))
 	msg := &message{srcIP: srcIP}
 	err = json.Unmarshal(c.readBuf[:num], msg)
 	if err != nil {
